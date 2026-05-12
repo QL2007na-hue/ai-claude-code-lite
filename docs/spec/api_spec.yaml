@@ -1,0 +1,814 @@
+openapi: "3.1.0"
+info:
+  title: AI Runtime API
+  version: "1.0.0"
+  description: |
+     AI Runtime REST API & WebSocket 完整规范。
+
+     本规范涵盖三部分：
+     1. **现有端点**（来自 api/server.py）
+     2. **计划新增端点**（任务控制、工作区管理、可观测性、插件管理、Provider 发现）
+     3. **WebSocket 事件流格式**（与 Redis Streams 广播一致）
+
+     鉴权：所有端点通过 `api_key` 请求头进行 Bearer Token 鉴权（当前为占位/可选）。
+  contact:
+    name: AI Runtime Team
+
+servers:
+  - url: http://localhost:8000
+    description: 本地开发服务器
+
+security:
+  - ApiKeyAuth: []
+
+# ═══════════════════════════════════════════════════════════════
+# 鉴权方案（占位）
+# ═══════════════════════════════════════════════════════════════
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: api_key
+      description: API 密钥（目前为占位，未来将强制校验）
+
+  # ── 通用模型 ──────────────────────────────────────────────
+  schemas:
+
+    # —— 枚举 ——
+    TaskStatus:
+      type: string
+      enum: [pending, running, review, retry, done, failed]
+      description: 任务生命周期状态
+
+    # —— 通用响应 ——
+    Error:
+      type: object
+      properties:
+        detail:
+          type: string
+          description: 人类可读错误信息
+      required: [detail]
+
+    # —— 任务 ——
+    TaskCreateRequest:
+      type: object
+      properties:
+        agent:
+          type: string
+          default: "planner"
+          description: 触发该任务的 Agent（planner / coder / reviewer）
+        description:
+          type: string
+          description: 任务自然语言描述
+        payload:
+          type: string
+          description: JSON 字符串形式的任务附加载荷
+      example:
+        agent: "planner"
+        description: "写一个 Python 贪吃蛇游戏"
+        payload: '{"goal":"写贪吃蛇"}'
+
+    Task:
+      type: object
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          description: 任务唯一 ID
+        agent:
+          type: string
+          description: 创建任务时指定的 Agent
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        payload:
+          type: object
+          description: 任务载荷（已反序列化）
+        result:
+          type: string
+          nullable: true
+          description: 任务结果（完成时填充）
+        created_at:
+          type: number
+          format: double
+          description: Unix 时间戳（秒）
+        updated_at:
+          type: number
+          format: double
+          description: 最近更新时间戳（秒）
+      required: [task_id, agent, status, payload, created_at, updated_at]
+
+    TaskList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Task"
+
+    # —— 时间线事件 ——
+    TimelineEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Redis Stream 消息 ID
+        task_id:
+          type: string
+          description: 关联任务 ID
+        agent:
+          type: string
+          description: 事件触发者（planner / coder / reviewer / orchestrator / system / plugin）
+        event:
+          type: string
+          description: 事件名（如 task.created, task.planned, review.approved）
+        payload:
+          type: string
+          description: JSON 字符串载荷
+        timestamp:
+          type: string
+          description: Unix 时间戳字符串
+      required: [id, task_id, agent, event, payload, timestamp]
+
+    # —— 工作区文件 ——
+    WorkspaceFile:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 文件相对路径
+        size:
+          type: integer
+          format: int64
+          description: 文件大小（字节）
+      required: [name, size]
+
+    WorkspaceFileList:
+      type: array
+      items:
+        $ref: "#/components/schemas/WorkspaceFile"
+
+    # —— 可观测性 ——
+    ObservabilityStatus:
+      type: object
+      properties:
+        running:
+          type: boolean
+          description: 编排引擎是否运行中
+        active_dags:
+          type: integer
+          description: 活跃 DAG 数量
+        ws_connections:
+          type: integer
+          description: WebSocket 活跃连接数
+        uptime_seconds:
+          type: number
+          format: double
+          description: 进程运行时长（秒）
+        active_tasks:
+          type: integer
+          description: 当前非终态任务数
+        total_tasks:
+          type: integer
+          description: 历史任务总数
+      required: [running, active_dags, ws_connections, uptime_seconds]
+
+    # —— 插件 ——
+    PluginInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 插件名称
+        version:
+          type: string
+          description: 语义化版本号
+        description:
+          type: string
+          description: 插件简要描述
+      required: [name, version, description]
+
+    PluginList:
+      type: array
+      items:
+        $ref: "#/components/schemas/PluginInfo"
+
+    PluginReloadRequest:
+      type: object
+      properties:
+        plugin_name:
+          type: string
+          description: 要重新加载的插件名称
+      required: [plugin_name]
+      example:
+        plugin_name: "todo_checker"
+
+    # —— AI Provider ——
+    ProviderInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Provider 注册名（deepseek / openai / ollama）
+        default_model:
+          type: string
+          description: 该 Provider 的默认模型名
+      required: [name, default_model]
+
+    ProviderList:
+      type: array
+      items:
+        $ref: "#/components/schemas/ProviderInfo"
+
+    # ——— 健康检查 ———
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        ws_connections:
+          type: integer
+        ws_clients:
+          type: array
+          items:
+            type: string
+        redis_connected:
+          type: boolean
+          description: Redis 是否可用（用于 WebSocket 广播 / Timeline 查询）
+        uptime_seconds:
+          type: number
+          format: double
+      required: [status, ws_connections, redis_connected]
+
+  # ── 通用参数 ──────────────────────────────────────────────
+  parameters:
+    TaskIdPath:
+      name: task_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 任务 UUID
+    StatusQuery:
+      name: status
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/TaskStatus"
+      description: 按状态过滤任务
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+      description: 返回事件数量上限
+
+  # ── 通用响应 ──────────────────────────────────────────────
+  responses:
+    401Unauthorized:
+      description: 缺少或无效的 api_key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    404NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    500InternalError:
+      description: 服务器内部错误
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+# ═══════════════════════════════════════════════════════════════
+# 路径定义
+# ═══════════════════════════════════════════════════════════════
+paths:
+
+  # ═══════════════════════════════════════════════════════════
+  # 现有端点（api/server.py 已实现）
+  # ═══════════════════════════════════════════════════════════
+
+  # ── Task CRUD ──────────────────────────────────────────────
+  /tasks:
+    post:
+      tags: [Tasks]
+      summary: 创建新任务
+      description: |
+       创建一个新的 Agent 任务，默认状态为 `pending`，并广播 `task.created` 事件到 Redis Streams。
+       任务创建后由 Orchestrator 自动编排 Planner → CoderAgent → Reviewer 流水线。
+      operationId: createTask
+      parameters:
+        - name: agent
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "planner"
+          description: 触发任务的 Agent 名称
+        - name: description
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 任务的自然语言描述
+        - name: payload
+          in: query
+          required: false
+          schema:
+            type: string
+          description: JSON 字符串形式的任务附加载荷
+      responses:
+        "200":
+          description: 任务创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                    format: uuid
+                  agent:
+                    type: string
+                  status:
+                    type: string
+                    example: "pending"
+              example:
+                task_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                agent: "planner"
+                status: "pending"
+        "500":
+          $ref: "#/components/responses/500InternalError"
+
+    get:
+      tags: [Tasks]
+      summary: 列出所有任务
+      description: 返回所有任务列表（按创建时间降序）。可通过 `?status=` 按状态过滤。
+      operationId: listTasks
+      parameters:
+        - $ref: "#/components/parameters/StatusQuery"
+      responses:
+        "200":
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+
+  /tasks/{task_id}:
+    get:
+      tags: [Tasks]
+      summary: 查询单个任务
+      description: 根据任务 ID 返回任务完整详情，不存在时返回 404。
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      responses:
+        "200":
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  # ── Timeline ───────────────────────────────────────────────
+  /timeline/{task_id}:
+    get:
+      tags: [Timeline]
+      summary: 查询任务事件时间线
+      description: |
+       从 Redis Streams 中查询指定任务的完整事件时间线（最近 500 条）。
+       当 Redis 不可用时返回空列表。
+      operationId: getTaskTimeline
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      responses:
+        "200":
+          description: 事件列表（按时间倒序）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TimelineEvent"
+
+  /timeline:
+    get:
+      tags: [Timeline]
+      summary: 查询全量时间线
+      description: 返回最近 N 条事件（全局，不限制任务）。Redis 不可用时返回空列表。
+      operationId: getFullTimeline
+      parameters:
+        - $ref: "#/components/parameters/LimitQuery"
+      responses:
+        "200":
+          description: 事件列表（按时间倒序）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TimelineEvent"
+
+  # ── Health ─────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [System]
+      summary: 健康检查
+      description: 返回服务健康状态、WebSocket 连接数和活跃客户端 ID 列表。
+      operationId: healthCheck
+      responses:
+        "200":
+          description: 服务健康
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: "ok"
+                ws_connections: 3
+                ws_clients: ["a1b2c3d4", "e5f67890", "abcd1234"]
+
+  # ═══════════════════════════════════════════════════════════
+  # 计划新增端点 — Task Control
+  # ═══════════════════════════════════════════════════════════
+
+  /tasks/{task_id}/plan:
+    post:
+      tags: [Task Control]
+      summary: 触发 Planner
+      description: |
+       显式触发指定任务的 Planner，执行子任务拆解。
+       若任务已有规划，返回 409 Conflict。
+      operationId: triggerPlanner
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      responses:
+        "200":
+          description: Planner 已触发
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                  plan_status:
+                    type: string
+                    enum: [started, already_planned]
+                  subtask_count:
+                    type: integer
+                    description: 产生的子任务数量（若已规划则返回 0）
+                required: [task_id, plan_status, subtask_count]
+              example:
+                task_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                plan_status: "started"
+                subtask_count: 0
+        "404":
+          $ref: "#/components/responses/404NotFound"
+        "409":
+          description: 任务已有规划
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: "任务已有规划，不可重复触发 Planner"
+        "500":
+          $ref: "#/components/responses/500InternalError"
+
+  /tasks/{task_id}/execute:
+    post:
+      tags: [Task Control]
+      summary: 触发 CoderAgent
+      description: |
+       显式触发指定任务的 CoderAgent 执行编码。适用于需要手动控制编码阶段的场景。
+       要求任务已完成规划（status == "running"）。
+      operationId: triggerCoderAgent
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  description: 覆盖默认模型（如 "gpt-4o"）
+                timeout:
+                  type: integer
+                  default: 300
+                  description: 编码超时（秒）
+      responses:
+        "200":
+          description: CoderAgent 已触发
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                  coding_status:
+                    type: string
+                    enum: [started, completed, failed]
+                  files_count:
+                    type: integer
+                    description: 生成/修改的文件数
+                required: [task_id, coding_status, files_count]
+              example:
+                task_id: "sub-001"
+                coding_status: "started"
+                files_count: 0
+        "404":
+          $ref: "#/components/responses/404NotFound"
+        "409":
+          description: 任务状态不允许执行（未完成规划或已终态）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: "任务状态为 done，不可执行编码"
+        "500":
+          $ref: "#/components/responses/500InternalError"
+
+  /tasks/{task_id}/review:
+    post:
+      tags: [Task Control]
+      summary: 触发 Reviewer
+      description: |
+       显式触发指定任务的 Reviewer 进行代码审查。
+       要求任务已完成编码（status == "review"）。
+      operationId: triggerReviewer
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      responses:
+        "200":
+          description: Reviewer 已触发
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                  review_status:
+                    type: string
+                    enum: [approved, rejected, failed]
+                  score:
+                    type: integer
+                    description: 审查评分（0-100）
+                  issues_count:
+                    type: integer
+                    description: 发现的问题数
+                required: [task_id, review_status, score, issues_count]
+              example:
+                task_id: "sub-001"
+                review_status: "approved"
+                score: 92
+                issues_count: 2
+        "404":
+          $ref: "#/components/responses/404NotFound"
+        "409":
+          description: 任务状态不允许审查
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/500InternalError"
+
+  # ═══════════════════════════════════════════════════════════
+  # 计划新增端点 — Workspace
+  # ═══════════════════════════════════════════════════════════
+
+  /tasks/{task_id}/workspace:
+    get:
+      tags: [Workspace]
+      summary: 列出工作区文件
+      description: |
+       返回指定任务 workspace 目录下的所有文件列表（相对路径，排除 .git 目录）。
+      operationId: listWorkspaceFiles
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+      responses:
+        "200":
+          description: 文件列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceFileList"
+              example:
+                - name: "src/main.py"
+                  size: 2048
+                - name: "src/game.py"
+                  size: 5120
+                - name: "requirements.txt"
+                  size: 128
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  /tasks/{task_id}/workspace/{filepath}:
+    get:
+      tags: [Workspace]
+      summary: 下载工作区文件
+      description: |
+       按路径下载指定任务 workspace 中的文件。路径使用 URL 编码（`/` → `%2F`）。
+       文件不存在时返回 404。
+      operationId: downloadWorkspaceFile
+      parameters:
+        - $ref: "#/components/parameters/TaskIdPath"
+        - name: filepath
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 文件相对于 workspace 根目录的路径（如 "src/main.py"）
+      responses:
+        "200":
+          description: 文件内容
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/404NotFound"
+
+  # ═══════════════════════════════════════════════════════════
+  # 计划新增端点 — Observability
+  # ═══════════════════════════════════════════════════════════
+
+  /observability:
+    get:
+      tags: [Observability]
+      summary: 获取运行时可观测性仪表盘
+      description: |
+       返回 AI Runtime 整体状态摘要：
+       - 编排引擎运行状态 & 活跃 DAG 数量
+       - WebSocket 连接数
+       - 进程已运行时长
+       - 活跃/历史任务统计
+      operationId: getObservability
+      responses:
+        "200":
+          description: 仪表盘数据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObservabilityStatus"
+              example:
+                running: true
+                active_dags: 2
+                ws_connections: 3
+                uptime_seconds: 3600.5
+                active_tasks: 4
+                total_tasks: 127
+
+  # ═══════════════════════════════════════════════════════════
+  # 计划新增端点 — Plugins
+  # ═══════════════════════════════════════════════════════════
+
+  /plugins:
+    get:
+      tags: [Plugins]
+      summary: 列出已加载插件
+      description: |
+       返回当前所有已注册插件的名称、版本和描述信息。
+      operationId: listPlugins
+      responses:
+        "200":
+          description: 已加载插件列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginList"
+              example:
+                - name: "todo_checker"
+                  version: "0.1.0"
+                  description: "扫描 workspace 中的 TODO/FIXME 标记"
+
+  /plugins/reload:
+    post:
+      tags: [Plugins]
+      summary: 重新加载指定插件
+      description: |
+       卸载并重新从插件目录加载指定插件。适用于插件代码热更新。
+       插件不存在时返回 404。
+      operationId: reloadPlugin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginReloadRequest"
+      responses:
+        "200":
+          description: 插件重新加载成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugin_name:
+                    type: string
+                  status:
+                    type: string
+                    enum: [reloaded]
+                  version:
+                    type: string
+                required: [plugin_name, status, version]
+              example:
+                plugin_name: "todo_checker"
+                status: "reloaded"
+                version: "0.2.0"
+        "404":
+          $ref: "#/components/responses/404NotFound"
+        "500":
+          $ref: "#/components/responses/500InternalError"
+
+  # ═══════════════════════════════════════════════════════════
+  # 计划新增端点 — Providers
+  # ═══════════════════════════════════════════════════════════
+
+  /providers:
+    get:
+      tags: [Providers]
+      summary: 列出可用 AI Provider
+      description: |
+       返回当前注册的所有 AI Provider 及其默认模型。
+       内置 Provider：deepseek、openai、ollama。
+      operationId: listProviders
+      responses:
+        "200":
+          description: Provider 列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderList"
+              example:
+                - name: "deepseek"
+                  default_model: "deepseek-chat"
+                - name: "openai"
+                  default_model: "gpt-4o"
+                - name: "ollama"
+                  default_model: "llama3"
+
+  # ═══════════════════════════════════════════════════════════
+  # WebSocket 端点
+  # ═══════════════════════════════════════════════════════════
+
+  /ws/events:
+    get:
+      tags: [WebSocket]
+      summary: WebSocket 事件流
+      description: |
+       建立 WebSocket 连接后，服务器将自动推送所有 Redis Streams 中的事件（`task.*` / `plugin.*` / `system.*` / `review.*` / `subtask.*`）。
+
+       **服务端 → 客户端** 消息格式：
+       ```json
+       {
+         "id": "1715550000000-0",
+         "task_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+         "agent": "planner",
+         "event": "task.planned",
+         "payload": "{\"goal\":\"写贪吃蛇\",\"subtasks\":[...]}",
+         "timestamp": "1715550001.456"
+       }
+       ```
+
+       **客户端 → 服务端** 消息：当前忽略（连接保活用途）。
+
+       | 字段          | 类型   | 说明                                                    |
+       |---------------|--------|--------------------------------------------------------|
+       | `id`          | string | Redis Stream 消息 ID                                    |
+       | `task_id`     | string | 事件关联的任务 ID（系统事件为空）                         |
+       | `agent`       | string | 事件触发者（planner / coder / reviewer / orchestrator / system / plugin） |
+       | `event`       | string | 事件名（如 task.created, task.planned, review.approved）  |
+       | `payload`     | string | JSON 字符串载荷，需客户端自行 `JSON.parse()`              |
+       | `timestamp`   | string | Unix 时间戳字符串                                       |
+
+       **连接管理**：每个连接分配 `client_id`（UUID8），断连后自动回收。
+      operationId: wsEvents
+      responses:
+        "101":
+          description: 协议切换 — WebSocket 连接已建立
