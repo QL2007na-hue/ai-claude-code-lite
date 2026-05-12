@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixel Mission Control — ai-runtime</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════
+   PIXEL MISSION CONTROL v1.0 — RETRO TERMINAL THEME
+   ══════════════════════════════════════════════════════════════ */
+:root {
+  --bg:         #0a0e14;
+  --panel:      #121820;
+  --border:     #1e2d3d;
+  --text:       #b3c7d6;
+  --text-dim:   #556678;
+  --green:      #00e676;
+  --green-dim:  #006e3a;
+  --cyan:       #00bcd4;
+  --yellow:     #ffd54f;
+  --red:        #ff5252;
+  --red-dim:    #7f0000;
+  --orange:     #ff9100;
+  --purple:     #b388ff;
+  --status-pending:  #607d8b;
+  --status-running:  #00e676;
+  --status-review:   #ffd54f;
+  --status-retry:    #ff9100;
+  --status-done:     #00bcd4;
+  --status-failed:   #ff5252;
+  --scanline-opacity: 0.03;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  height:100%; overflow:hidden;
+  background:var(--bg);
+  color:var(--text);
+  font-family: 'VT323', 'Courier New', monospace;
+  font-size: 17px;
+  line-height: 1.35;
+  image-rendering: pixelated;
+}
+body::after {
+  content:''; position:fixed; inset:0;
+  background: repeating-linear-gradient(
+    0deg, rgba(0,0,0,var(--scanline-opacity)) 0px,
+    transparent 2px, transparent 4px
+  );
+  pointer-events:none; z-index:9999;
+}
+.pixel, .pixel-title { font-family: 'Press Start 2P', 'Courier New', monospace; }
+.pixel-title { font-size:11px; letter-spacing:1px; }
+/* ── Layout ─────────────────────────────────────────────────── */
+#app {
+  display:grid;
+  grid-template-rows: 52px 1fr 28px;
+  height:100vh;
+}
+#header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 16px;
+  background:var(--panel);
+  border-bottom:2px solid var(--border);
+}
+#header h1 { font-size:12px; color:var(--green); text-shadow:0 0 8px var(--green-dim); }
+#header-left { display:flex; align-items:center; gap:12px; }
+#connection-dot { width:10px; height:10px; background:var(--red); }
+#connection-dot.online { background:var(--green); box-shadow:0 0 8px var(--green-dim); }
+#header-right { display:flex; align-items:center; gap:16px; font-size:19px; }
+#main {
+  display:grid;
+  grid-template-columns: 280px 1fr 280px;
+  gap:2px; background:var(--border);
+  overflow:hidden;
+}
+.panel {
+  background:var(--panel);
+  display:flex; flex-direction:column;
+  overflow:hidden;
+}
+.panel-head {
+  padding:6px 10px;
+  background:#18222e;
+  border-bottom:1px solid var(--border);
+  font-family:'Press Start 2P', monospace;
+  font-size:9px; color:var(--cyan);
+  text-transform:uppercase;
+  flex-shrink:0;
+  display:flex; justify-content:space-between;
+}
+.panel-body {
+  flex:1; overflow-y:auto; overflow-x:hidden;
+  padding:6px;
+  scrollbar-width:thin;
+  scrollbar-color: var(--border) var(--panel);
+}
+.panel-body::-webkit-scrollbar { width:4px; }
+.panel-body::-webkit-scrollbar-track { background:var(--panel); }
+.panel-body::-webkit-scrollbar-thumb { background:var(--border); }
+
+#footer {
+  background:var(--panel);
+  border-top:1px solid var(--border);
+  display:flex; align-items:center; padding:0 12px;
+  font-size:15px; color:var(--text-dim);
+  gap:24px;
+}
+#footer .key { color:var(--cyan); }
+
+/* ── Right Panel Tabs ─────────────────────────────────────── */
+#right-panel { display:flex; flex-direction:column; overflow:hidden; }
+#tab-bar { display:flex; flex-shrink:0; }
+.tab {
+  flex:1; padding:6px 4px; text-align:center;
+  font-family:'Press Start 2P', monospace; font-size:8px;
+  background:#18222e; color:var(--text-dim); cursor:pointer;
+  border-bottom:2px solid transparent;
+  transition: all .15s;
+}
+.tab.active { color:var(--cyan); border-color:var(--cyan); }
+.tab:hover { color:var(--text); }
+.tab-content { display:none; flex:1; overflow-y:auto; padding:4px; }
+.tab-content.active { display:block; }
+
+/* ── Timeline ─────────────────────────────────────────────── */
+.tl-entry {
+  padding:4px 6px; margin-bottom:2px;
+  border-left:3px solid var(--border);
+  font-size:16px;
+  transition: background .2s;
+}
+.tl-entry.new { animation: flash-in .4s ease; }
+@keyframes flash-in {
+  0% { background: rgba(0,230,118,.12); }
+  100% { background: transparent; }
+}
+.tl-time { color:var(--text-dim); font-size:14px; }
+.tl-agent { display:inline-block; min-width:58px; font-weight:bold; }
+.tl-agent.planner { color:var(--purple); }
+.tl-agent.coder { color:var(--cyan); }
+.tl-agent.reviewer { color:var(--yellow); }
+.tl-event { color:var(--green); }
+.tl-payload { color:var(--text-dim); font-size:14px; display:block; margin-top:1px; }
+.tl-entry.failed { border-left-color:var(--red); background:rgba(255,82,82,.05); }
+.tl-entry.done { border-left-color:var(--cyan); }
+.tl-entry.started { border-left-color:var(--green); }
+
+/* ── Task Graph ───────────────────────────────────────────── */
+.tg-task {
+  padding:4px 6px; margin:2px 0;
+  border:1px solid var(--border);
+  position:relative;
+}
+.tg-task.root { border-color:var(--purple); }
+.tg-indent { border-left:1px dashed var(--border); margin-left:14px; padding-left:12px; }
+.tg-id { color:var(--text-dim); font-size:13px; }
+.tg-status { display:inline-block; margin-left:6px; font-size:12px; padding:0 3px; }
+.tg-status.pending { color:var(--status-pending); }
+.tg-status.running { color:var(--status-running); }
+.tg-status.review { color:var(--status-review); }
+.tg-status.retry { color:var(--status-retry); }
+.tg-status.done { color:var(--status-done); }
+.tg-status.failed { color:var(--status-failed); }
+.tg-body { margin-top:2px; }
+.tg-title { color:var(--text); }
+
+/* ── Agent Status Cards ───────────────────────────────────── */
+.agent-card {
+  padding:8px 10px; margin:4px 0;
+  border:1px solid var(--border);
+}
+.agent-card .name {
+  font-family:'Press Start 2P', monospace;
+  font-size:10px;
+}
+.agent-card .name.planner { color:var(--purple); }
+.agent-card .name.coder { color:var(--cyan); }
+.agent-card .name.reviewer { color:var(--yellow); }
+.agent-indicator {
+  display:inline-block; width:8px; height:8px; margin-right:6px;
+}
+.agent-indicator.running { background:var(--green); box-shadow:0 0 6px var(--green-dim); animation:blink 1s infinite; }
+.agent-indicator.idle { background:var(--text-dim); }
+.agent-indicator.stuck { background:var(--red); box-shadow:0 0 6px var(--red-dim); }
+@keyframes blink { 50% { opacity:0.3; } }
+.agent-last { color:var(--text-dim); font-size:14px; margin-top:3px; }
+.agent-count { color:var(--text-dim); font-size:14px; }
+
+/* ── Event Console ────────────────────────────────────────── */
+.ev-line {
+  padding:2px 6px; font-size:16px;
+  border-bottom:1px solid rgba(30,45,61,.5);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.ev-line .tag {
+  display:inline-block; padding:0 4px; margin-right:4px;
+  font-size:11px; font-weight:bold;
+}
+.ev-line .tag.edit-file { background:var(--cyan); color:#000; }
+.ev-line .tag.run-shell { background:var(--orange); color:#000; }
+.ev-line .tag.review-fail { background:var(--red); color:#fff; }
+.ev-line .tag.review-ok { background:var(--green); color:#000; }
+.ev-line .tag.planning { background:var(--purple); color:#fff; }
+.ev-line .tag.coding { background:var(--cyan); color:#000; }
+.ev-line .msg { color:var(--text-dim); font-size:14px; margin-left:6px; }
+.ev-sep { height:1px; background:var(--border); margin:4px 0; }
+
+/* ── Metrics ──────────────────────────────────────────────── */
+#metrics { display:flex; gap:8px; }
+.metric { font-size:14px; }
+.metric span { color:var(--green); font-size:18px; font-weight:bold; }
+
+/* ── Empty State ──────────────────────────────────────────── */
+.empty {
+  color:var(--text-dim); text-align:center; padding:20px;
+  font-size:16px; font-style:italic;
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ── HEADER ──────────────────────────────────────────── -->
+  <div id="header">
+    <div id="header-left">
+      <span id="connection-dot" title="connection"></span>
+      <h1 class="pixel-title">◈ PIXEL MISSION CONTROL v1.0 ◈</h1>
+    </div>
+    <div id="header-right">
+      <span id="ws-count" class="pixel-title" style="font-size:9px">● 0</span>
+      <span id="clock" style="color:var(--green); font-size:18px"></span>
+    </div>
+  </div>
+
+  <!-- ── MAIN GRID ────────────────────────────────────────── -->
+  <div id="main">
+    <!-- LEFT: Task Graph -->
+    <div class="panel">
+      <div class="panel-head"><span>◧ TASK GRAPH</span><span id="task-count">0 tasks</span></div>
+      <div class="panel-body" id="task-graph"></div>
+    </div>
+
+    <!-- CENTER: Timeline -->
+    <div class="panel">
+      <div class="panel-head"><span>◨ EVENT TIMELINE</span><span id="tl-count">0 events</span></div>
+      <div class="panel-body" id="timeline"></div>
+    </div>
+
+    <!-- RIGHT: Agent Status + Event Console (tabbed) -->
+    <div id="right-panel" class="panel">
+      <div id="tab-bar">
+        <div class="tab active" data-tab="agents">◈ AGENTS</div>
+        <div class="tab" data-tab="console">◈ CONSOLE</div>
+      </div>
+      <div class="tab-content active" id="tab-agents">
+        <div id="agent-cards"></div>
+        <div class="ev-sep"></div>
+        <div style="padding:6px">
+          <div class="pixel-title" style="font-size:8px;color:var(--cyan);margin-bottom:6px">LEGEND</div>
+          <div style="font-size:14px">
+            <div><span style="color:var(--green)">●</span> running</div>
+            <div><span style="color:var(--text-dim)">○</span> idle</div>
+            <div><span style="color:var(--red)">●</span> stuck / failed</div>
+          </div>
+        </div>
+      </div>
+      <div class="tab-content" id="tab-console">
+        <div id="event-console"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── FOOTER ───────────────────────────────────────────── -->
+  <div id="footer">
+    <span class="key">API:</span> <span id="api-url">http://localhost:8100</span>
+    <span class="key">WS:</span> <span id="ws-status">DISCONNECTED</span>
+    <span style="margin-left:auto" id="metrics">
+      <span class="metric">tasks <span id="m-total">0</span></span>
+      <span class="metric">done <span id="m-done">0</span></span>
+      <span class="metric">fail <span id="m-fail">0</span></span>
+    </span>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// PIXEL MISSION CONTROL — APPLICATION LOGIC
+// ═══════════════════════════════════════════════════════════════
+const API = 'http://localhost:8100';
+const WS_URL = 'ws://localhost:8100/ws/events';
+
+let ws = null;
+let wsReconnectTimer = null;
+let events = [];
+let tasks = {};
+let agentState = {
+  planner: { status: 'idle', count: 0, lastEvent: '—' },
+  coder:   { status: 'idle', count: 0, lastEvent: '—' },
+  reviewer:{ status: 'idle', count: 0, lastEvent: '—' },
+};
+
+// ── DOM refs ────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const dom = {
+  connDot:    $('connection-dot'),
+  wsCount:    $('ws-count'),
+  wsStatus:   $('ws-status'),
+  clock:      $('clock'),
+  timeline:   $('timeline'),
+  tlCount:    $('tl-count'),
+  taskGraph:  $('task-graph'),
+  taskCount:  $('task-count'),
+  agentCards: $('agent-cards'),
+  eventConsole: $('event-console'),
+  mTotal: $('m-total'), mDone: $('m-done'), mFail: $('m-fail'),
+};
+
+// ── Clock ───────────────────────────────────────────────────
+function updateClock() {
+  const d = new Date();
+  dom.clock.textContent = d.toTimeString().slice(0,8);
+}
+setInterval(updateClock, 1000); updateClock();
+
+// ── Tab switching ───────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    $('tab-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// ── WebSocket ───────────────────────────────────────────────
+function connectWS() {
+  if (ws) { ws.close(); }
+  dom.connDot.classList.remove('online');
+  dom.wsStatus.textContent = 'CONNECTING...';
+  dom.wsStatus.style.color = 'var(--yellow)';
+
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch(e) {
+    scheduleReconnect(); return;
+  }
+
+  ws.onopen = () => {
+    dom.connDot.classList.add('online');
+    dom.wsStatus.textContent = 'LIVE';
+    dom.wsStatus.style.color = 'var(--green)';
+    dom.wsCount.textContent = '● LIVE';
+  };
+
+  ws.onmessage = (e) => {
+    let data;
+    try { data = JSON.parse(e.data); } catch(_) { return; }
+    handleEvent(data);
+  };
+
+  ws.onclose = () => {
+    dom.connDot.classList.remove('online');
+    dom.wsStatus.textContent = 'DISCONNECTED';
+    dom.wsStatus.style.color = 'var(--red)';
+    dom.wsCount.textContent = '● 0';
+    scheduleReconnect();
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+function scheduleReconnect() {
+  if (wsReconnectTimer) return;
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    connectWS();
+  }, 3000);
+}
+
+// ── Event Handler ───────────────────────────────────────────
+function handleEvent(data) {
+  events.unshift(data);
+  if (events.length > 500) events.pop();
+
+  updateTimeline();
+  updateAgentState(data);
+  updateConsole(data);
+  dom.tlCount.textContent = events.length + ' events';
+}
+
+function isFailure(e) { return e.includes('failed') || e.includes('rejected') || e.includes('error'); }
+function isDone(e) { return e.includes('completed') || e.includes('done') || e.includes('approved'); }
+function isStarted(e) { return e.includes('started') || e.includes('created'); }
+
+function updateTimeline() {
+  dom.timeline.innerHTML = events.slice(0, 200).map((e, i) => {
+    let cls = 'tl-entry';
+    if (i === 0) cls += ' new';
+    if (isFailure(e.event)) cls += ' failed';
+    else if (isDone(e.event)) cls += ' done';
+    else if (isStarted(e.event)) cls += ' started';
+
+    const ts = e.timestamp ? new Date(parseFloat(e.timestamp)*1000).toTimeString().slice(0,8) : '--:--:--';
+    let payloadStr = '';
+    try {
+      const p = typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload;
+      if (p && typeof p === 'object') {
+        payloadStr = Object.entries(p).slice(0,3).map(([k,v]) =>
+          `${k}: ${typeof v==='object'?JSON.stringify(v).slice(0,50):String(v).slice(0,50)}`
+        ).join(' | ');
+      }
+    } catch(_) { payloadStr = e.payload ? String(e.payload).slice(0,80) : ''; }
+
+    return `<div class="${cls}">
+      <span class="tl-time">${ts}</span>
+      <span class="tl-agent ${e.agent}">${e.agent || '—'}</span>
+      <span class="tl-event">${e.event || '—'}</span>
+      ${payloadStr ? `<span class="tl-payload">${payloadStr}</span>` : ''}
+    </div>`;
+  }).join('');
+  if (!events.length) dom.timeline.innerHTML = '<div class="empty">AWAITING SIGNAL...</div>';
+}
+
+function updateAgentState(data) {
+  const a = agentState[data.agent];
+  if (!a) return;
+  a.count++;
+  a.lastEvent = data.event;
+
+  if (isFailure(data.event)) a.status = 'stuck';
+  else if (isDone(data.event)) a.status = 'idle';
+  else if (isStarted(data.event)) a.status = 'running';
+
+  renderAgentCards();
+}
+
+function renderAgentCards() {
+  dom.agentCards.innerHTML = ['planner','coder','reviewer'].map(name => {
+    const s = agentState[name];
+    const indCls = s.status === 'running' ? 'running' : s.status === 'stuck' ? 'stuck' : 'idle';
+    const label = s.status === 'running' ? 'ACTIVE' : s.status === 'stuck' ? 'STUCK' : 'IDLE';
+    return `<div class="agent-card">
+      <div class="name ${name}"><span class="agent-indicator ${indCls}"></span>${name.toUpperCase()}</div>
+      <div style="margin-top:4px;font-size:12px;color:var(--text-dim)">${label} — ${s.count} events</div>
+      <div class="agent-last">last: ${s.lastEvent}</div>
+    </div>`;
+  }).join('');
+}
+
+function updateConsole(data) {
+  const e = data.event || '';
+  let tag = '', tagCls = '';
+  if (e.includes('code_written') || e.includes('edit_file') || e.includes('file')) { tag = 'EDIT_FILE'; tagCls = 'edit-file'; }
+  else if (e.includes('shell')) { tag = 'RUN_SHELL'; tagCls = 'run-shell'; }
+  else if (isFailure(e)) { tag = e.includes('review') ? 'REVIEW_FAIL' : 'FAIL'; tagCls = 'review-fail'; }
+  else if (e.includes('approved') || e.includes('done')) { tag = 'REVIEW_OK'; tagCls = 'review-ok'; }
+  else if (e.includes('plan')) { tag = 'PLANNING'; tagCls = 'planning'; }
+  else if (e.includes('cod')) { tag = 'CODING'; tagCls = 'coding'; }
+  else { tag = 'EVENT'; tagCls = ''; }
+
+  const ts = data.timestamp ? new Date(parseFloat(data.timestamp)*1000).toTimeString().slice(0,8) : '';
+  const agent = data.agent || 'sys';
+  const shortTask = (data.task_id || '').slice(0,8);
+
+  const item = document.createElement('div');
+  item.className = 'ev-line';
+  item.innerHTML = `<span class="tag ${tagCls}">${tag}</span> ${ts} ${agent}/${shortTask} <span class="msg">${e}</span>`;
+
+  const console = dom.eventConsole;
+  console.insertBefore(item, console.firstChild);
+  if (console.children.length > 100) console.removeChild(console.lastChild);
+}
+
+// ── Task List (REST) ────────────────────────────────────────
+async function fetchTasks() {
+  try {
+    const resp = await fetch(API + '/tasks');
+    if (!resp.ok) return;
+    const list = await resp.json();
+    tasks = {};
+    let td = 0, tf = 0;
+    list.forEach(t => {
+      tasks[t.task_id] = t;
+      if (t.status === 'done') td++;
+      if (t.status === 'failed') tf++;
+    });
+    dom.taskCount.textContent = Object.keys(tasks).length + ' tasks';
+    dom.mTotal.textContent = Object.keys(tasks).length;
+    dom.mDone.textContent = td;
+    dom.mFail.textContent = tf;
+    renderTaskGraph();
+  } catch(_) {}
+}
+
+function renderTaskGraph() {
+  const ids = Object.keys(tasks);
+  if (!ids.length) {
+    dom.taskGraph.innerHTML = '<div class="empty">NO TASKS YET</div>';
+    return;
+  }
+
+  // Build tree: group subtasks by parent_task_id
+  const children = {};
+  ids.forEach(id => {
+    const t = tasks[id];
+    let payload = {};
+    try { payload = typeof t.payload === 'string' ? JSON.parse(t.payload) : (t.payload || {}); } catch(_) {}
+    const parent = payload.parent_task_id || 'root';
+    if (!children[parent]) children[parent] = [];
+    if (!children[parent].find(c => c.task_id === id)) {
+      children[parent].push(t);
+    }
+  });
+
+  const statusIcon = s => {
+    switch(s) {
+      case 'pending': return '○'; case 'running': return '▶'; case 'review': return '◎';
+      case 'retry': return '↻'; case 'done': return '●'; case 'failed': return '✕';
+      default: return '?';
+    }
+  };
+
+  function renderNode(task, depth) {
+    let payload = {};
+    try { payload = typeof task.payload === 'string' ? JSON.parse(task.payload) : (task.payload || {}); } catch(_) {}
+    const title = payload.title || payload.description || task.agent;
+    const indent = depth > 0 ? ' style="margin-left:'+(depth*16)+'px"' : '';
+    return `<div class="tg-task${depth===0?' root':''}"${indent}>
+      <span class="tg-id">${(task.task_id||'').slice(0,10)}</span>
+      <span class="tg-status ${task.status}">${statusIcon(task.status)} ${task.status||'?'}</span>
+      <div class="tg-body"><span class="tg-title">${title}</span></div>
+    </div>`;
+  }
+
+  let html = '';
+  function renderTree(parentId, depth) {
+    const kids = children[parentId] || [];
+    kids.forEach(t => {
+      html += renderNode(t, depth);
+      renderTree(t.task_id, depth + 1);
+    });
+  }
+
+  // Find root tasks (no parent)
+  const rootTasks = ids.filter(id => {
+    const t = tasks[id];
+    let payload = {};
+    try { payload = typeof t.payload === 'string' ? JSON.parse(t.payload) : (t.payload || {}); } catch(_) {}
+    return !payload.parent_task_id;
+  });
+
+  if (rootTasks.length) {
+    rootTasks.forEach(t => {
+      html += renderNode(t, 0);
+      renderTree(t.task_id, 1);
+    });
+  } else {
+    // All are children of an implied parent
+    renderTree('root', 0);
+  }
+
+  dom.taskGraph.innerHTML = html;
+}
+
+// ── Init ────────────────────────────────────────────────────
+renderAgentCards();
+dom.timeline.innerHTML = '<div class="empty">AWAITING SIGNAL...</div>';
+dom.eventConsole.innerHTML = '<div class="empty" style="padding-top:40px">events will appear here</div>';
+dom.taskGraph.innerHTML = '<div class="empty">FETCHING TASKS...</div>';
+
+connectWS();
+fetchTasks();
+setInterval(fetchTasks, 5000);
+</script>
+</body>
+</html>
